@@ -11,11 +11,17 @@ from bot.database.db import (
     get_open_tickets,
 )
 from bot.brain.memory_engine import log_trade_entry, log_trade_exit
-from bot.execution.risk_engine import calculate_dynamic_lot, can_trade_safe
+from bot.execution.risk_engine import calculate_dynamic_lot, can_trade_safe, get_risk_status
 from bot.execution.execution_manager import (
     calculate_sl_tp_from_atr,
     validate_execution,
     manage_open_trades,
+)
+from bot.utils.debug import (
+    debug_execution, 
+    debug_execution_result, 
+    debug_rejection,
+    debug_risk_checks,
 )
 
 # Module logger
@@ -102,10 +108,11 @@ def send_order(order_type: str, lot: float = None, sl_points: int = None,
     Send market order with ATR-based SL/TP and full validation.
     
     Includes:
-    - Risk engine checks
+    - Risk engine checks with debug output
     - Execution validation (slippage, price freshness)
     - Retry logic (2 attempts)
     - Memory logging (entry reason, strategy)
+    - Full debug trace of execution flow
     
     Args:
         order_type: "BUY" | "SELL"
@@ -119,26 +126,42 @@ def send_order(order_type: str, lot: float = None, sl_points: int = None,
 
     logger.info(f"Trade attempt | {order_type} | reason={entry_reason}")
 
-    # ── Risk Engine Master Check ──────────────────────────────────────────
+    # ── Risk Engine Master Check with Debug ──────────────────────────────
+    risk_status = get_risk_status()
+    debug_risk_checks(
+        kill_switch_active=risk_status["kill_switch_active"],
+        daily_loss_ok=risk_status["daily_loss_ok"],
+        daily_trades_ok=risk_status["daily_trades_ok"],
+        daily_loss_amount=risk_status["daily_loss_amount"],
+        max_daily_loss=risk_status["max_daily_loss"],
+        daily_trades=risk_status["daily_trades"],
+        max_daily_trades=risk_status["max_daily_trades"],
+        drawdown_percent=risk_status["drawdown_percent"],
+    )
+    
     if not can_trade_safe():
         logger.warning("Trade blocked: risk engine check failed")
+        debug_rejection("Risk engine check failed - Master gate")
         return None
 
     if not can_trade():
         return None
 
     if not is_trading_allowed():
+        debug_rejection("Drawdown limit hit - Position cap exceeded")
         return None
 
     # ── Get live price ────────────────────────────────────────────────────
     tick = mt5.symbol_info_tick(SYMBOL)
     if tick is None:
         logger.error("send_order: symbol_info_tick returned None")
+        debug_rejection("Cannot get live price", {"error": "symbol_info_tick returned None"})
         return None
 
     # ── Spread Check ──────────────────────────────────────────────────────
     if not _check_spread(tick):
         logger.warning("Trade blocked: spread too high")
+        debug_rejection("Spread too high")
         return None
 
     price = tick.ask if order_type == "BUY" else tick.bid
@@ -146,6 +169,7 @@ def send_order(order_type: str, lot: float = None, sl_points: int = None,
     sym = mt5.symbol_info(SYMBOL)
     if sym is None:
         logger.error("send_order: symbol_info returned None")
+        debug_rejection("Cannot get symbol info", {"symbol": SYMBOL})
         return None
 
     point = sym.point
@@ -163,6 +187,7 @@ def send_order(order_type: str, lot: float = None, sl_points: int = None,
     # ── Execution Validation ──────────────────────────────────────────────
     if not validate_execution(order_type, price):
         logger.warning("Trade blocked: execution validation failed")
+        debug_rejection("Execution validation failed")
         return None
 
     # ── SL / TP Calculation ───────────────────────────────────────────────
@@ -171,15 +196,27 @@ def send_order(order_type: str, lot: float = None, sl_points: int = None,
         tp = price + tp_points * point
         if sl >= price or tp <= price:
             logger.error(f"Invalid SL/TP for BUY: price={price} sl={sl} tp={tp}")
+            debug_rejection("Invalid SL/TP calculation", {"order_type": order_type, "price": price, "sl": sl, "tp": tp})
             return None
     else:
         sl = price + sl_points * point
         tp = price - tp_points * point
         if sl <= price or tp >= price:
             logger.error(f"Invalid SL/TP for SELL: price={price} sl={sl} tp={tp}")
+            debug_rejection("Invalid SL/TP calculation", {"order_type": order_type, "price": price, "sl": sl, "tp": tp})
             return None
 
     logger.info(f"Order params: {order_type} price={price:.5f} sl={sl:.5f} tp={tp:.5f}")
+    
+    # ── DEBUG: Print execution parameters ──────────────────────────────────
+    debug_execution(
+        order_type=order_type,
+        lot=lot,
+        entry_price=price,
+        sl=sl,
+        tp=tp,
+        reason=entry_reason if entry_reason else strategy
+    )
 
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
@@ -216,11 +253,26 @@ def send_order(order_type: str, lot: float = None, sl_points: int = None,
     
     if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
         logger.error(f"Trade FAILED after {ORDER_RETRY_ATTEMPTS} attempts")
+        
+        # ── DEBUG: Print execution failure ────────────────────────────────
+        error_msg = result.comment if result else "No response from MT5"
+        debug_execution_result(
+            success=False,
+            retcode=result.retcode if result else None,
+            error_msg=error_msg
+        )
         return result
 
     # ── Trade Success ─────────────────────────────────────────────────────
     logger.info(f"Trade OPENED: ticket={result.order} | {order_type} | price={price:.5f}")
     print(f"✅ TRADE OPENED: {order_type} ticket={result.order}")
+    
+    # ── DEBUG: Print execution success ────────────────────────────────────
+    debug_execution_result(
+        success=True,
+        ticket=result.order,
+        comment=f"{order_type} at {price:.5f}"
+    )
 
     insert_trade(result.order, order_type, lot, price, 0)
     

@@ -97,10 +97,10 @@ def _get_daily_trades():
         return []
 
 
-def check_daily_loss_limit() -> bool:
+def check_daily_loss_limit() -> tuple:
     """
     Check if today's closed trades exceeded loss limit.
-    Returns True if trading allowed, False if blocked.
+    Returns (is_allowed: bool, amount: float, limit: float, reason: str)
     """
     today_trades = _get_daily_trades()
     
@@ -118,76 +118,106 @@ def check_daily_loss_limit() -> bool:
                 total_loss += abs(profit)
     
     if total_loss > MAX_DAILY_LOSS:
-        logger.warning(
-            f"Daily loss limit exceeded: {total_loss:.2f}$ / {MAX_DAILY_LOSS:.2f}$ limit"
-        )
-        return False
+        reason = f"Daily loss limit exceeded: ${total_loss:.2f} / ${MAX_DAILY_LOSS:.2f}"
+        logger.warning(reason)
+        return (False, total_loss, MAX_DAILY_LOSS, reason)
     
-    logger.debug(f"Daily loss check: {total_loss:.2f}$ / {MAX_DAILY_LOSS:.2f}$ ({closed_count} closed)")
-    return True
+    reason = f"Daily loss check OK: ${total_loss:.2f} / ${MAX_DAILY_LOSS:.2f} ({closed_count} closed)"
+    logger.debug(reason)
+    return (True, total_loss, MAX_DAILY_LOSS, reason)
 
 
-def check_daily_trades_limit() -> bool:
+def check_daily_trades_limit() -> tuple:
     """
     Check if max daily trades exceeded.
-    Returns True if trading allowed, False if blocked.
+    Returns (is_allowed: bool, count: int, limit: int, reason: str)
     """
     today_trades = _get_daily_trades()
     
     trade_count = len(today_trades)
     
     if trade_count >= MAX_DAILY_TRADES:
-        logger.warning(
-            f"Max daily trades reached: {trade_count} / {MAX_DAILY_TRADES}"
-        )
-        return False
+        reason = f"Max daily trades reached: {trade_count} / {MAX_DAILY_TRADES}"
+        logger.warning(reason)
+        return (False, trade_count, MAX_DAILY_TRADES, reason)
     
-    logger.debug(f"Daily trades check: {trade_count} / {MAX_DAILY_TRADES}")
-    return True
+    reason = f"Daily trades check OK: {trade_count} / {MAX_DAILY_TRADES}"
+    logger.debug(reason)
+    return (True, trade_count, MAX_DAILY_TRADES, reason)
 
 
-def check_kill_switch() -> bool:
+def check_kill_switch() -> tuple:
     """
     Emergency kill switch: block trading if equity drawdown exceeds threshold.
-    Returns True if trading allowed, False if kill switch active.
+    Returns (is_allowed: bool, drawdown_percent: float, threshold: float, reason: str)
     """
     acc = mt5.account_info()
     if acc is None:
         logger.error("check_kill_switch: account_info() returned None")
-        return True  # Allow on error
+        return (True, 0.0, KILL_SWITCH_DRAWDOWN_PERCENT, "Account info unavailable")
     
     if acc.balance <= 0:
         logger.warning("check_kill_switch: balance <= 0")
-        return True
+        return (True, 0.0, KILL_SWITCH_DRAWDOWN_PERCENT, "Invalid account balance")
     
     drawdown_percent = ((acc.balance - acc.equity) / acc.balance) * 100.0
     
     if drawdown_percent > KILL_SWITCH_DRAWDOWN_PERCENT:
-        logger.critical(
-            f"🚨 KILL SWITCH ACTIVATED: drawdown={drawdown_percent:.2f}% / {KILL_SWITCH_DRAWDOWN_PERCENT}% threshold"
-        )
-        return False
+        reason = f"🚨 KILL SWITCH ACTIVATED: {drawdown_percent:.2f}% / {KILL_SWITCH_DRAWDOWN_PERCENT}% threshold"
+        logger.critical(reason)
+        return (False, drawdown_percent, KILL_SWITCH_DRAWDOWN_PERCENT, reason)
     
-    logger.debug(f"Kill switch check: drawdown={drawdown_percent:.2f}%")
-    return True
+    reason = f"Kill switch OK: {drawdown_percent:.2f}% / {KILL_SWITCH_DRAWDOWN_PERCENT}%"
+    logger.debug(reason)
+    return (True, drawdown_percent, KILL_SWITCH_DRAWDOWN_PERCENT, reason)
 
 
 def can_trade_safe() -> bool:
     """
     Master risk check: all risk gates must pass.
     Returns True if safe to trade, False otherwise.
+    
+    Also exported as functions with detailed returns for debugging:
+    - check_kill_switch() -> (bool, drawdown, threshold, reason)
+    - check_daily_loss_limit() -> (bool, amount, limit, reason)
+    - check_daily_trades_limit() -> (bool, count, limit, reason)
     """
     
     # Check 1: Kill switch (highest priority)
-    if not check_kill_switch():
+    is_allowed, _, _, _ = check_kill_switch()
+    if not is_allowed:
         return False
     
     # Check 2: Daily loss limit
-    if not check_daily_loss_limit():
+    is_allowed, _, _, _ = check_daily_loss_limit()
+    if not is_allowed:
         return False
     
     # Check 3: Daily trades limit
-    if not check_daily_trades_limit():
+    is_allowed, _, _, _ = check_daily_trades_limit()
+    if not is_allowed:
         return False
     
     return True
+
+
+def get_risk_status() -> dict:
+    """
+    Get detailed risk status for debug output.
+    Returns dict with all risk checks and their details.
+    """
+    kill_ok, drawdown, kill_threshold, _ = check_kill_switch()
+    loss_ok, loss_amount, max_loss, _ = check_daily_loss_limit()
+    trades_ok, trades_count, max_trades, _ = check_daily_trades_limit()
+    
+    return {
+        "kill_switch_active": not kill_ok,
+        "drawdown_percent": drawdown,
+        "kill_switch_threshold": kill_threshold,
+        "daily_loss_ok": loss_ok,
+        "daily_loss_amount": loss_amount,
+        "max_daily_loss": max_loss,
+        "daily_trades_ok": trades_ok,
+        "daily_trades": trades_count,
+        "max_daily_trades": max_trades,
+    }

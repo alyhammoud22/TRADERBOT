@@ -1,5 +1,6 @@
 import time
 import logging
+from datetime import datetime
 
 from bot.mt5_connector import connect, shutdown, is_connected
 from bot.brain.brain_engine import make_trading_decision
@@ -7,6 +8,13 @@ from bot.brain.memory_engine import init_memory_schema
 from bot.execution.trader import send_order, sync_profit
 from bot.utils.config import validate_config
 from bot.database.db import init_db
+from bot.utils.debug import (
+    debug_header, 
+    debug_footer,
+    debug_section,
+    debug_market_context,
+    debug_log,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -66,11 +74,26 @@ if __name__ == "__main__":
                     continue
 
             # ──────────────────────────────────────────────────────────────
-            # MAIN TRADING CYCLE
+            # MAIN TRADING CYCLE WITH DEBUG TRACE
             # ──────────────────────────────────────────────────────────────
             try:
+                # ── Print Loop Header ─────────────────────────────────────
+                loop_timestamp = datetime.now()
+                debug_header(timestamp=loop_timestamp)
+                
                 # ── Brain Decision ────────────────────────────────────────
                 decision = make_trading_decision()
+                
+                # ── Log Market Context ────────────────────────────────────
+                if decision.context:
+                    debug_section("MARKET STATE")
+                    debug_market_context(
+                        trend=decision.context.trend,
+                        volatility=decision.context.volatility,
+                        session=decision.context.session,
+                        spread_pips=decision.context.spread_pips,
+                        current_price=decision.context.current_price,
+                    )
                 
                 logger.debug(f"Decision: {decision.to_dict()}")
                 
@@ -86,6 +109,9 @@ if __name__ == "__main__":
                         f"Confidence: {decision.confidence}%"
                     )
                     
+                    # ── EXECUTION SECTION ─────────────────────────────────
+                    debug_section("EXECUTION")
+                    
                     # Send order with strategy context
                     send_order(
                         decision.signal,
@@ -93,11 +119,23 @@ if __name__ == "__main__":
                         strategy=decision.strategy_used
                     )
                 else:
+                    debug_section("EXECUTION")
                     reason = " | ".join(decision.reasons) if decision.reasons else "no signal"
                     logger.debug(f"Signal rejected: {reason}")
+                    print(f"⏭️  No trade this cycle: {reason[:60]}...")
                 
                 # ── Profit Sync ───────────────────────────────────────────
+                debug_section("HOUSEKEEPING")
                 sync_profit()
+                
+                logger.debug("Cycle complete")
+                
+                # ── Print Loop Footer ─────────────────────────────────────
+                debug_footer()
+                
+            except Exception as exc:
+                logger.error(f"Main loop error: {exc}", exc_info=True)
+                debug_footer()
 
             except Exception as exc:
                 logger.error(f"Error in main loop: {exc}", exc_info=True)

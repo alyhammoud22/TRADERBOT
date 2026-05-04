@@ -10,8 +10,9 @@ from typing import Optional
 
 from bot.brain.market_context import get_market_context, MarketContext
 from bot.engine.strategy_engine import get_signal
-from bot.execution.risk_engine import can_trade_safe
+from bot.execution.risk_engine import can_trade_safe, check_daily_loss_limit, check_daily_trades_limit, check_kill_switch, get_risk_status
 from bot.utils.config import STRATEGY
+from bot.utils.debug import debug_log, debug_brain_decision, debug_rejection
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,7 @@ def make_trading_decision() -> TradeDecision:
     except Exception as exc:
         logger.error(f"market_context failed: {exc}")
         decision.reasons.append(f"Market context error: {exc}")
+        debug_rejection(f"Market context error: {exc}")
         return decision
     
     # ───────────────────────────────────────────────────────────────────────
@@ -84,6 +86,7 @@ def make_trading_decision() -> TradeDecision:
         decision.allow_trade = False
         decision.reasons.append(f"Spread too high ({ctx.spread_pips:.2f}pips)")
         logger.warning(f"Decision rejected: {decision}")
+        debug_rejection(f"Spread too high: {ctx.spread_pips:.2f}pips")
         return decision
     
     # ───────────────────────────────────────────────────────────────────────
@@ -95,6 +98,7 @@ def make_trading_decision() -> TradeDecision:
         decision.allow_trade = False
         decision.reasons.append("Volatility too low — no quality signal")
         logger.warning(f"Decision rejected: {decision}")
+        debug_rejection("Volatility too low", {"volatility": ctx.volatility})
         return decision
     
     if ctx.volatility == "high":
@@ -103,6 +107,7 @@ def make_trading_decision() -> TradeDecision:
         decision.allow_trade = False
         decision.reasons.append("Volatility too high — too risky")
         logger.warning(f"Decision rejected: {decision}")
+        debug_rejection("Volatility too high", {"volatility": ctx.volatility})
         return decision
     
     # ───────────────────────────────────────────────────────────────────────
@@ -114,6 +119,7 @@ def make_trading_decision() -> TradeDecision:
     except Exception as exc:
         logger.error(f"Strategy signal failed: {exc}")
         decision.reasons.append(f"Strategy error: {exc}")
+        debug_rejection(f"Strategy error", {"error": str(exc)})
         return decision
     
     if raw_signal is None:
@@ -121,6 +127,7 @@ def make_trading_decision() -> TradeDecision:
         decision.confidence = 0
         decision.allow_trade = False
         decision.reasons.append(f"No {STRATEGY} signal")
+        logger.debug(f"No signal from {STRATEGY}")
         return decision
     
     decision.signal = raw_signal
@@ -154,6 +161,7 @@ def make_trading_decision() -> TradeDecision:
         decision.confidence = 0
         decision.allow_trade = False
         logger.warning(f"Decision rejected: {decision}")
+        debug_rejection(f"Signal NOT aligned with trend", {"signal": raw_signal, "trend": ctx.trend})
         return decision
     
     # ───────────────────────────────────────────────────────────────────────
@@ -166,10 +174,12 @@ def make_trading_decision() -> TradeDecision:
             decision.allow_trade = False
             decision.reasons.append("Risk engine gate rejected trade")
             logger.warning(f"Decision rejected: {decision}")
+            debug_rejection("Risk engine check failed", {"reason": "One or more risk checks blocked trading"})
             return decision
     except Exception as exc:
         logger.error(f"Risk engine check failed: {exc}")
         decision.reasons.append(f"Risk check error: {exc}")
+        debug_rejection("Risk engine error", {"error": str(exc)})
         return decision
     
     # ───────────────────────────────────────────────────────────────────────
@@ -196,5 +206,8 @@ def make_trading_decision() -> TradeDecision:
     decision.reasons.append(f"Trade approved with {decision.confidence}% confidence")
     
     logger.info(f"Decision approved: {decision}")
+    
+    # ── DEBUG OUTPUT ──────────────────────────────────────────────────────
+    debug_brain_decision(decision.signal, decision.confidence, decision.allow_trade, decision.reasons)
     
     return decision
