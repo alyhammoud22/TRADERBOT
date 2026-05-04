@@ -6,7 +6,6 @@ from streamlit_autorefresh import st_autorefresh
 from bot.database.db import get_trades, init_db
 from bot.utils.mt5_data import get_rates, get_positions, get_account
 from bot.mt5_connector import connect, get_price
-from bot.engine.strategy_engine import get_signal
 from bot.execution.trader import close_all_positions
 from bot.utils.config import STRATEGY, SYMBOL
 
@@ -91,11 +90,10 @@ else:
 st.divider()
 
 # =============================================================================
-# LIVE PRICE & SIGNAL
-# FIX: get_signal() is called exactly once per refresh cycle (not twice as before).
+# LIVE PRICE & RECENT SIGNAL
+# Dashboard is READ-ONLY: signal intelligence is in the Trading Brain (main.py)
 # =============================================================================
-price  = get_price()
-signal = get_signal(STRATEGY)   # single call — result reused for display
+price = get_price()
 
 col_price, col_signal = st.columns(2)
 
@@ -109,11 +107,19 @@ with col_price:
         st.error("No price data")
 
 with col_signal:
-    st.subheader("🎯 Current Signal")
-    if signal == "BUY":
-        st.success("🟢 BUY SIGNAL")
-    elif signal == "SELL":
-        st.error("🔴 SELL SIGNAL")
+    st.subheader("🎯 Recent Signal")
+    # Show the most recent trade's type
+    recent_trades = get_trades(limit=1)
+    if recent_trades:
+        recent_trade = recent_trades[0]
+        # Trade tuple: (id, ticket, type, volume, price, profit, status, time)
+        trade_type = recent_trade[2]  # "BUY" or "SELL"
+        if trade_type == "BUY":
+            st.success("🟢 BUY SIGNAL")
+        elif trade_type == "SELL":
+            st.error("🔴 SELL SIGNAL")
+        else:
+            st.info("⏳ NO SIGNAL")
     else:
         st.info("⏳ NO SIGNAL")
 
