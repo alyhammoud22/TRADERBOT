@@ -198,23 +198,51 @@ if trades:
         columns = [f"col_{i}" for i in range(num_cols)]
 
     df_trades = pd.DataFrame(trades, columns=columns)
-    df_trades["Profit"] = pd.to_numeric(df_trades["Profit"], errors="coerce")
+    
+    # ── Fix: Handle missing "Profit" column ───────────────────────────────
+    # If the dynamic column detection failed to create "Profit", try to identify it.
+    profit_col = None
+    if "Profit" in df_trades.columns:
+        profit_col = "Profit"
+    else:
+        # Try alternative column names or positions
+        for col in df_trades.columns:
+            if col.lower() == "profit":
+                profit_col = col
+                break
+        # If still not found, check if 6th column (index 5) is profit
+        if profit_col is None and len(df_trades.columns) >= 6:
+            profit_col = df_trades.columns[5]
+    
+    if profit_col:
+        df_trades[profit_col] = pd.to_numeric(df_trades[profit_col], errors="coerce")
+        # Rename to "Profit" for consistency if needed
+        if profit_col != "Profit":
+            df_trades = df_trades.rename(columns={profit_col: "Profit"})
+    else:
+        st.error("⚠️ Could not identify 'Profit' column in trade data. Database schema may be corrupt.")
+        st.write("Debug info — actual columns:", df_trades.columns.tolist())
 
     st.dataframe(df_trades, use_container_width=True)
 
     # ── Analytics — closed trades only ───────────────────────────────────
     # FIX: was computing win/loss on ALL trades, counting open (profit=0) as losses.
     #      Now restricted to status='closed' rows only.
-    if "Status" in df_trades.columns:
-        df_closed = df_trades[df_trades["Status"] == "closed"].copy()
-    else:
-        df_closed = df_trades.copy()  # old schema: include all
+    if profit_col and ("Profit" in df_trades.columns or profit_col in df_trades.columns):
+        profit_column = "Profit" if "Profit" in df_trades.columns else profit_col
+        
+        if "Status" in df_trades.columns:
+            df_closed = df_trades[df_trades["Status"] == "closed"].copy()
+        else:
+            df_closed = df_trades.copy()  # old schema: include all
 
-    total_closed = len(df_closed)
-    wins         = len(df_closed[df_closed["Profit"] > 0])
-    losses       = len(df_closed[df_closed["Profit"] < 0])
-    total_pnl    = df_closed["Profit"].sum()
-    win_rate     = (wins / total_closed * 100) if total_closed > 0 else 0.0
+        total_closed = len(df_closed)
+        wins         = len(df_closed[df_closed[profit_column] > 0])
+        losses       = len(df_closed[df_closed[profit_column] < 0])
+        total_pnl    = df_closed[profit_column].sum()
+        win_rate     = (wins / total_closed * 100) if total_closed > 0 else 0.0
+    else:
+        total_closed = wins = losses = total_pnl = win_rate = 0
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Total Trades",   len(df_trades))

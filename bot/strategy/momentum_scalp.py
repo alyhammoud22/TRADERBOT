@@ -154,6 +154,7 @@ def _log_decision(signal, reason=""):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_signal():
+    print("MOMENTUM SCALP ACTIVATED")
     """
     Momentum Scalp Strategy.
 

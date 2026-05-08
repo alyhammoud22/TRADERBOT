@@ -76,25 +76,23 @@ def is_trading_allowed() -> bool:
 
 
 def _check_spread(tick) -> bool:
-    """Check if spread is within limits."""
+    """
+    Check if spread is within limits.
+    Uses dollar spread (ask - bid) — NOT pip-divided.
+    See market_context._get_spread_info() for full explanation.
+    """
     if tick is None:
         return False
-    
+
     from bot.utils.config import MAX_SPREAD
-    
-    sym = mt5.symbol_info(SYMBOL)
-    if sym is None:
+
+    spread_usd = tick.ask - tick.bid
+
+    if spread_usd > MAX_SPREAD:
+        logger.warning(f"Spread too high: ${spread_usd:.2f} / ${MAX_SPREAD} threshold")
         return False
-    
-    spread = tick.ask - tick.bid
-    point = sym.point
-    spread_pips = spread / point if point > 0 else 0
-    
-    if spread_pips > MAX_SPREAD:
-        logger.warning(f"Spread too high: {spread_pips:.2f} pips / {MAX_SPREAD} threshold")
-        return False
-    
-    logger.debug(f"Spread check: {spread_pips:.2f} pips (OK)")
+
+    logger.debug(f"Spread check: ${spread_usd:.2f} (OK)")
     return True
 
 

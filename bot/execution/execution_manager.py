@@ -86,69 +86,57 @@ def calculate_sl_tp_from_atr() -> tuple:
 # EXECUTION VALIDATION
 # =============================================================================
 
-def validate_execution(order_type: str, requested_price: float, max_slippage_pips: float = 2.0) -> bool:
+def validate_execution(order_type: str, requested_price: float, max_slippage_usd: float = 1.0) -> bool:
     """
     Re-validate execution conditions before order send.
-    
+
     Checks:
-    1. Current spread is acceptable
-    2. Price hasn't moved too far from request
+    1. Current spread is acceptable  (dollar spread, not pip-divided)
+    2. Price hasn't moved too far from request  (dollar slippage)
     3. Tick data is fresh (< 2 seconds old)
-    
+
     Args:
         order_type: "BUY" or "SELL"
         requested_price: Price we intended to execute at
-        max_slippage_pips: Max acceptable price movement (pips)
-    
+        max_slippage_usd: Max acceptable price movement in dollars (default $1.00)
+
     Returns:
         True if all checks pass, False otherwise
     """
-    
+
     tick = mt5.symbol_info_tick(SYMBOL)
     if tick is None:
         logger.error("validate_execution: symbol_info_tick returned None")
         return False
-    
-    sym = mt5.symbol_info(SYMBOL)
-    if sym is None:
-        logger.error("validate_execution: symbol_info returned None")
-        return False
-    
-    point = sym.point
-    if point <= 0:
-        logger.error("validate_execution: invalid point")
-        return False
-    
-    # ── Check 1: Spread ───────────────────────────────────────────────────
-    spread = tick.ask - tick.bid
-    spread_pips = spread / point
-    
+
+    # ── Check 1: Spread (dollar spread) ──────────────────────────────────
+    spread_usd = tick.ask - tick.bid
+
     from bot.utils.config import MAX_SPREAD
-    if spread_pips > MAX_SPREAD:
+    if spread_usd > MAX_SPREAD:
         logger.warning(
-            f"validate_execution REJECTED: spread={spread_pips:.2f}pips > {MAX_SPREAD}"
+            f"validate_execution REJECTED: spread=${spread_usd:.2f} > ${MAX_SPREAD}"
         )
         return False
-    
-    # ── Check 2: Slippage ─────────────────────────────────────────────────
+
+    # ── Check 2: Slippage (dollar movement) ──────────────────────────────
     current_price = tick.ask if order_type == "BUY" else tick.bid
-    slippage = abs(current_price - requested_price)
-    slippage_pips = slippage / point
-    
-    if slippage_pips > max_slippage_pips:
+    slippage_usd = abs(current_price - requested_price)
+
+    if slippage_usd > max_slippage_usd:
         logger.warning(
-            f"validate_execution REJECTED: slippage={slippage_pips:.2f}pips > {max_slippage_pips}"
+            f"validate_execution REJECTED: slippage=${slippage_usd:.2f} > ${max_slippage_usd}"
         )
         return False
-    
+
     # ── Check 3: Price freshness ──────────────────────────────────────────
     tick_age = time.time() - tick.time
     if tick_age > 2.0:
         logger.warning(f"validate_execution REJECTED: tick age={tick_age:.1f}s > 2s")
         return False
-    
+
     logger.debug(
-        f"validate_execution OK: spread={spread_pips:.2f} slippage={slippage_pips:.2f} tick_age={tick_age:.2f}s"
+        f"validate_execution OK: spread=${spread_usd:.2f} slippage=${slippage_usd:.2f} tick_age={tick_age:.2f}s"
     )
     return True
 

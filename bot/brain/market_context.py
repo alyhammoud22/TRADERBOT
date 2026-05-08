@@ -24,7 +24,7 @@ class MarketContext:
     def __init__(self):
         self.trend = None  # "bullish" | "bearish" | "sideways"
         self.volatility = None  # "low" | "normal" | "high"
-        self.spread_pips = 0.0
+        self.spread_pips = 0.0  # NOTE: actually USD dollar spread (ask - bid), not pips
         self.spread_acceptable = False
         self.session = None  # "asia" | "london" | "ny" | "other"
         self.current_price = 0.0
@@ -35,7 +35,7 @@ class MarketContext:
     def __repr__(self):
         return (
             f"MarketContext(trend={self.trend}, vol={self.volatility}, "
-            f"spread={self.spread_pips:.2f}pips, session={self.session})"
+            f"spread=${self.spread_pips:.2f} USD, session={self.session})"
         )
 
 
@@ -123,24 +123,75 @@ def _detect_session() -> str:
 
 def _get_spread_info() -> tuple:
     """
-    Get current spread in pips.
-    Returns: (spread_pips, is_acceptable)
+    Get current spread in price units (dollars for XAUUSD) and check
+    whether it is within the MAX_SPREAD threshold.
+
+    Returns: (spread_price_units, is_acceptable)
+
+    HOW SPREAD IS CALCULATED
+    ========================
+    We use the MT5-documented method:
+        spread_points = symbol_info().spread   (integer, broker-native points)
+        spread_price  = spread_points * symbol_info().point
+
+    WHY NOT tick.ask - tick.bid
+    ===========================
+    On most brokers tick.ask - tick.bid gives the correct dollar spread
+    (e.g. 0.17 for a 17-point spread on XAUUSD with point=0.01).
+    However some brokers return tick values scaled differently, causing
+    ask - bid to return 17.0 instead of 0.17. Using symbol_info().spread
+    * point is the MT5-documented, broker-agnostic method and avoids this.
+
+    DEBUG FIELDS PRINTED
+    ====================
+    All raw values are printed so you can see exactly what your broker
+    is sending, making it easy to verify the calculation is correct.
+
+    Typical XAUUSD spreads in price units ($):
+      ECN account:          $0.10 - $0.50
+      Standard/STP:         $0.30 - $1.50
+      During major news:    $1.00 - $5.00+
+
+    MAX_SPREAD in config.py must be in the same price-unit dollars.
+    Recommended starting value for XAUUSD: 2.0 (generous, for validation).
+    Tighten to 0.8 once you confirm your broker's typical spread.
     """
     tick = mt5.symbol_info_tick(SYMBOL)
     if tick is None:
+        print("  [SPREAD DEBUG]  ERROR: symbol_info_tick() returned None")
         return (0.0, False)
-    
+
     sym = mt5.symbol_info(SYMBOL)
     if sym is None:
+        print("  [SPREAD DEBUG]  ERROR: symbol_info() returned None")
         return (0.0, False)
-    
-    spread = tick.ask - tick.bid
-    point = sym.point
-    spread_pips = spread / point if point > 0 else 0.0
-    
-    is_acceptable = spread_pips <= MAX_SPREAD
-    
-    return (spread_pips, is_acceptable)
+
+    # --- Raw values from broker -------------------------------------------
+    ask             = tick.ask
+    bid             = tick.bid
+    raw_diff        = ask - bid          # naive subtraction (may be wrong unit)
+    point           = sym.point          # smallest price increment this broker uses
+    digits          = sym.digits         # decimal places in price quotes
+    spread_points   = sym.spread         # integer spread in broker points (authoritative)
+
+    # --- Correct calculation (MT5-documented method) ----------------------
+    spread_price = spread_points * point  # converts points → price units (dollars)
+
+    # --- Decision ---------------------------------------------------------
+    is_acceptable = spread_price <= MAX_SPREAD
+
+    # --- Full debug print (always visible in terminal) --------------------
+    print(f"  [SPREAD DEBUG]  ask={ask:.5f}  bid={bid:.5f}")
+    print(f"  [SPREAD DEBUG]  raw (ask-bid)={raw_diff:.5f}  "
+          f"← naive subtraction (broker-dependent unit)")
+    print(f"  [SPREAD DEBUG]  point={point}  digits={digits}  "
+          f"spread_points={spread_points}")
+    print(f"  [SPREAD DEBUG]  spread_price = {spread_points} pts x {point} "
+          f"= ${spread_price:.4f}  ← value used for gate")
+    print(f"  [SPREAD DEBUG]  MAX_SPREAD=${MAX_SPREAD}  "
+          f"acceptable={is_acceptable}")
+
+    return (spread_price, is_acceptable)
 
 
 def get_market_context() -> MarketContext:
